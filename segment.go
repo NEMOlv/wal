@@ -226,6 +226,9 @@ func (seg *segment) Close() error {
 }
 
 // Size returns the size of the segment file.
+// Size 返回段文件大小
+// block的块号是从0开始的，因此块号*块大小为前n-1块的数据大小
+// 前n-1块的数据大小 + 当前块的数据大小 = 段文件的数据大小
 func (seg *segment) Size() int64 {
 	size := int64(seg.currentBlockNumber) * int64(blockSize)
 	return size + int64(seg.currentBlockSize)
@@ -237,21 +240,29 @@ func (seg *segment) Size() int64 {
 //
 // Each chunk has a header, and the header contains the length, type and checksum.
 // And the payload of the chunk is the real data you want to Write.
+//
+// writeToBuffer 计算数据的chunk块位置(chunkPosition), 将数据写入 字节缓冲池(bytebufferpool), 更新段文件(segment)的状态
+// 数据将以chunk块为单位写入，chunk块有四种类型: ChunkTypeFull, ChunkTypeFirst, ChunkTypeMiddle, ChunkTypeLast.
+// 每一个chunk块都有一个首部，首部包含：长度、类型、chunk块大小
+// 而chunk块的有效载荷就是你要写入的真实数据
 func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteBuffer) (*ChunkPosition, error) {
+	// 获取字节缓冲数组的长度
 	startBufferLen := chunkBuffer.Len()
 	padding := uint32(0)
 
+	// 如果块文件已经关闭，则返回关闭错
 	if seg.closed {
 		return nil, ErrClosed
 	}
 
 	// if the left block size can not hold the chunk header, padding the block
+	// 如果左侧block块的大小无法容纳chunk块首部，则对block块进行填充
 	if seg.currentBlockSize+chunkHeaderSize >= blockSize {
 		// padding if necessary
 		if seg.currentBlockSize < blockSize {
-			p := make([]byte, blockSize-seg.currentBlockSize)
+			padding = blockSize - seg.currentBlockSize
+			p := make([]byte, padding)
 			chunkBuffer.B = append(chunkBuffer.B, p...)
-			padding += blockSize - seg.currentBlockSize
 
 			// a new block
 			seg.currentBlockNumber += 1
@@ -260,42 +271,52 @@ func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteB
 	}
 
 	// return the start position of the chunk, then the user can use it to read the data.
+	// 返回数据块的起始位置，然后用户就可以使用它来读取数据。
 	position := &ChunkPosition{
 		SegmentId:   seg.id,
 		BlockNumber: seg.currentBlockNumber,
 		ChunkOffset: int64(seg.currentBlockSize),
 	}
 
+	// 获取待写数据大小
 	dataSize := uint32(len(data))
 	// The entire chunk can fit into the block.
+	// 整个chunk块都可以放入block块中
 	if seg.currentBlockSize+dataSize+chunkHeaderSize <= blockSize {
 		seg.appendChunkBuffer(chunkBuffer, data, ChunkTypeFull)
 		position.ChunkSize = dataSize + chunkHeaderSize
 	} else {
 		// If the size of the data exceeds the size of the block,
 		// the data should be written to the block in batches.
+		// 如果数据大小超过block块的大小，则应分批将数据写入block块。
 		var (
 			leftSize             = dataSize
 			blockCount    uint32 = 0
 			currBlockSize        = seg.currentBlockSize
 		)
 
+		// todo:这里的逻辑值得反复品味
 		for leftSize > 0 {
+			// 第一次的chunkSize是最新Block剩余可写入的数据大小
 			chunkSize := blockSize - currBlockSize - chunkHeaderSize
 			if chunkSize > leftSize {
 				chunkSize = leftSize
 			}
 
+			// 第一次的end = chunkSize
 			var end = dataSize - leftSize + chunkSize
 			if end > dataSize {
 				end = dataSize
 			}
 
 			// append the chunks to the buffer
+			// 将chunk块加入缓存
 			var chunkType ChunkType
 			switch leftSize {
+			// 第一次 leftSize = dataSize, 所以是ChunkTypeFirst
 			case dataSize: // First chunk
 				chunkType = ChunkTypeFirst
+			// 最后一次leftSize = chunkSize，所以是ChunkTypeLast
 			case chunkSize: // Last chunk
 				chunkType = ChunkTypeLast
 			default: // Middle chunk
@@ -311,6 +332,7 @@ func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteB
 	}
 
 	// the buffer length must be equal to chunkSize+padding length
+	// buffer的长度必须等于chunkSize+padding
 	endBufferLen := chunkBuffer.Len()
 	if position.ChunkSize+padding != uint32(endBufferLen-startBufferLen) {
 		return nil, fmt.Errorf("wrong!!! the chunk size %d is not equal to the buffer len %d",
@@ -318,6 +340,7 @@ func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteB
 	}
 
 	// update segment status
+	// 更新段文件状态
 	seg.currentBlockSize += position.ChunkSize
 	if seg.currentBlockSize >= blockSize {
 		seg.currentBlockNumber += seg.currentBlockSize / blockSize
@@ -328,16 +351,19 @@ func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteB
 }
 
 // writeAll write batch data to the segment file.
+// writeAll 将批数据写入段文件
 func (seg *segment) writeAll(data [][]byte) (positions []*ChunkPosition, err error) {
 	if seg.closed {
 		return nil, ErrClosed
 	}
 
 	// if any error occurs, restore the segment status
+	// 如果出现任何错误，恢复段文件状态
 	originBlockNumber := seg.currentBlockNumber
 	originBlockSize := seg.currentBlockSize
 
 	// init chunk buffer
+	// 初始化chunk buffer
 	chunkBuffer := bytebufferpool.Get()
 	chunkBuffer.Reset()
 	defer func() {
@@ -349,6 +375,7 @@ func (seg *segment) writeAll(data [][]byte) (positions []*ChunkPosition, err err
 	}()
 
 	// write all data to the chunk buffer
+	// 将所有数据写入chunk buffer(chunk块缓冲)
 	var pos *ChunkPosition
 	positions = make([]*ChunkPosition, len(data))
 	for i := 0; i < len(positions); i++ {
@@ -359,6 +386,7 @@ func (seg *segment) writeAll(data [][]byte) (positions []*ChunkPosition, err err
 		positions[i] = pos
 	}
 	// write the chunk buffer to the segment file
+	// 将chunk buffer写入段文件
 	if err = seg.writeChunkBuffer(chunkBuffer); err != nil {
 		return
 	}
@@ -366,6 +394,7 @@ func (seg *segment) writeAll(data [][]byte) (positions []*ChunkPosition, err err
 }
 
 // Write writes the data to the segment file.
+// Write 将数据写入段文件
 func (seg *segment) Write(data []byte) (pos *ChunkPosition, err error) {
 	if seg.closed {
 		return nil, ErrClosed
