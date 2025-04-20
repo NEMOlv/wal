@@ -204,23 +204,25 @@ func (seg *segment) Remove() error {
 	// 如果段文件已经关闭，则直接执行os删除操作
 	// 否则先将段文件关闭，再执行os删除操作
 	if !seg.closed {
-		seg.closed = true
 		if err := seg.fd.Close(); err != nil {
 			return err
 		}
+		seg.closed = true
 	}
-
 	return os.Remove(seg.fd.Name())
 }
 
 // Close closes the segment file.
+// Close 关闭段文件
 func (seg *segment) Close() error {
 	if seg.closed {
 		return nil
 	}
-
+	if err := seg.fd.Close(); err != nil {
+		return err
+	}
 	seg.closed = true
-	return seg.fd.Close()
+	return nil
 }
 
 // Size returns the size of the segment file.
