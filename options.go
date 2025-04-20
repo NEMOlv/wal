@@ -47,7 +47,7 @@ const (
 
 var DefaultOptions = Options{
 	DirPath:        os.TempDir(),
-	SegmentSize:    GB,
+	SegmentSize:    1 * GB,
 	SegmentFileExt: ".SEG",
 	Sync:           false,
 	BytesPerSync:   0,
