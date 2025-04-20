@@ -15,6 +15,7 @@ import (
 type ChunkType = byte
 type SegmentID = uint32
 
+// Chunk类型
 const (
 	ChunkTypeFull ChunkType = iota
 	ChunkTypeFirst
@@ -23,7 +24,9 @@ const (
 )
 
 var (
-	ErrClosed     = errors.New("the segment file is closed")
+	// ErrClosed 段文件关闭错误
+	ErrClosed = errors.New("the segment file is closed")
+	// ErrInvalidCRC 无效CRC错误(数据损坏错误)
 	ErrInvalidCRC = errors.New("invalid crc, the data may be corrupted")
 )
 
@@ -46,61 +49,94 @@ const (
 // Segment represents a single segment file in WAL.
 // The segment file is append-only, and the data is written in blocks.
 // Each block is 32KB, and the data is written in chunks.
+//
+// segment: 表示WAL中的单个段文件
+// 段文件是追加写入的，写入数据以block块为单位
+// 每个block块为 32KB，写入数据以chunk块为单位
 type segment struct {
-	id                 SegmentID
-	fd                 *os.File
+	// 段文件ID
+	id SegmentID
+	// 文件句柄，用于操作段文件
+	fd *os.File
+	// 当前block块的块号
 	currentBlockNumber uint32
-	currentBlockSize   uint32
-	closed             bool
-	header             []byte
-	startupBlock       *startupBlock
+	// 当前block块的大小
+	currentBlockSize uint32
+	// 关闭标识
+	closed bool
+	// 段文件首部信息
+	header []byte
+	// 启动块？
+	startupBlock *startupBlock
+	// 是否遍历启动？
 	isStartupTraversal bool
 }
 
 // segmentReader is used to iterate all the data from the segment file.
 // You can call Next to get the next chunk data,
 // and io.EOF will be returned when there is no data.
+//
+// segmentReader 用于从段文件中遍历所有数据
+// 你可以调用 Next 函数获取下一个chunk数据, 并且当没有数据时将返回io.EOF
 type segmentReader struct {
-	segment     *segment
+	// 段文件指针
+	segment *segment
+	// block块的块号
 	blockNumber uint32
+	// chunk块的写入偏移
 	chunkOffset int64
 }
 
 // There is only one reader(single goroutine) for startup traversal,
 // so we can use one block to finish the whole traversal
 // to avoid memory allocation.
+//
+// 启动遍历只有一个读取器（单个 goroutine），因此我们可以使用一个 block 来完成整个遍历，以避免内存分配
 type startupBlock struct {
-	block       []byte
+	// block块
+	block []byte
+	// block块的块号
 	blockNumber int64
 }
 
 // ChunkPosition represents the position of a chunk in a segment file.
 // Used to read the data from the segment file.
+//
+// ChunkPosition: 表示chunk块在段文件中的位置
+// 常用于从段文件中读取数据
 type ChunkPosition struct {
+	// SegmentId 段文件ID
 	SegmentId SegmentID
 	// BlockNumber The block number of the chunk in the segment file.
+	// BlockNumber 段文件中chunk块所在block块的块号
 	BlockNumber uint32
 	// ChunkOffset The start offset of the chunk in the segment file.
+	// ChunkOffset 段文件中的chunk块的写入偏移
 	ChunkOffset int64
 	// ChunkSize How many bytes the chunk data takes up in the segment file.
+	// ChunkSize 段文件中chunk块数据所占的字节数。
 	ChunkSize uint32
 }
 
+// block缓存池
 var blockPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, blockSize)
 	},
 }
 
+// 获取block缓存
 func getBuffer() []byte {
 	return blockPool.Get().([]byte)
 }
 
+// 释放block缓存
 func putBuffer(buf []byte) {
 	blockPool.Put(buf)
 }
 
 // openSegmentFile a new segment file.
+// openSegmentFile: 打开一个的段文件
 func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
 	fd, err := os.OpenFile(
 		SegmentFileName(dirPath, extName, id),
@@ -113,17 +149,22 @@ func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
 	}
 
 	// set the current block number and block size.
+	// 设置当前block块的块号和块大小
+	// 如果打开的是空文件, 则offset=0，否则offset=文件的末尾位置
 	offset, err := fd.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, fmt.Errorf("seek to the end of segment file %d%s failed: %v", id, extName, err)
 	}
 
+	// 返回段文件结构体
 	return &segment{
-		id:                 id,
-		fd:                 fd,
-		header:             make([]byte, chunkHeaderSize),
+		id:     id,
+		fd:     fd,
+		header: make([]byte, chunkHeaderSize),
+		// 如果打开的是空文件, 则currentBlockNumber=0，否则为该segment文件最后一个没写完的block块的块号
 		currentBlockNumber: uint32(offset / blockSize),
-		currentBlockSize:   uint32(offset % blockSize),
+		// 如果打开的是空文件, 则currentBlockSize=0，否则为该segment文件最后一个没写完的block块的块大小
+		currentBlockSize: uint32(offset % blockSize),
 		startupBlock: &startupBlock{
 			block:       make([]byte, blockSize),
 			blockNumber: -1,
@@ -135,6 +176,9 @@ func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
 // NewReader creates a new segment reader.
 // You can call Next to get the next chunk data,
 // and io.EOF will be returned when there is no data.
+//
+// NewReader 创建一个新的段文件读取器
+// 你可以通过调用 Next 函数来获取下一个chunk数据, 并且将会在没有数据时返回io.EOF
 func (seg *segment) NewReader() *segmentReader {
 	return &segmentReader{
 		segment:     seg,
@@ -144,15 +188,21 @@ func (seg *segment) NewReader() *segmentReader {
 }
 
 // Sync flushes the segment file to disk.
+// Sync 将段文件刷写到磁盘上
 func (seg *segment) Sync() error {
+	// 如果段文件已经关闭，返回nil
 	if seg.closed {
 		return nil
 	}
+	// 段文件刷写
 	return seg.fd.Sync()
 }
 
 // Remove removes the segment file.
+// Remove 删除段文件
 func (seg *segment) Remove() error {
+	// 如果段文件已经关闭，则直接执行os删除操作
+	// 否则先将段文件关闭，再执行os删除操作
 	if !seg.closed {
 		seg.closed = true
 		if err := seg.fd.Close(); err != nil {

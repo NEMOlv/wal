@@ -141,6 +141,7 @@ func Open(options Options) (*WAL, error) {
 }
 
 // SegmentFileName returns the file name of a segment file.
+// SegmentFileName 返回段文件的文件名
 func SegmentFileName(dirPath string, extName string, id SegmentID) string {
 	return filepath.Join(dirPath, fmt.Sprintf("%09d"+extName, id))
 }
