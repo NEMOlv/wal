@@ -168,9 +168,11 @@ func (seg *segment) Close() error {
 	if seg.closed {
 		return nil
 	}
-
+	if err := seg.fd.Close(); err != nil {
+		return err
+	}
 	seg.closed = true
-	return seg.fd.Close()
+	return nil
 }
 
 // Size returns the size of the segment file.
