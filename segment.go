@@ -154,10 +154,10 @@ func (seg *segment) Sync() error {
 // Remove removes the segment file.
 func (seg *segment) Remove() error {
 	if !seg.closed {
-		seg.closed = true
 		if err := seg.fd.Close(); err != nil {
 			return err
 		}
+		seg.closed = true
 	}
 
 	return os.Remove(seg.fd.Name())
