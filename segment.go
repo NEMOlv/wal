@@ -400,10 +400,13 @@ func (seg *segment) Write(data []byte) (pos *ChunkPosition, err error) {
 		return nil, ErrClosed
 	}
 
+	// if any error occurs, restore the segment status
+	// 如果出现任何错误，恢复段文件状态
 	originBlockNumber := seg.currentBlockNumber
 	originBlockSize := seg.currentBlockSize
 
 	// init chunk buffer
+	// 初始化 chunk buffer
 	chunkBuffer := bytebufferpool.Get()
 	chunkBuffer.Reset()
 	defer func() {
@@ -415,11 +418,13 @@ func (seg *segment) Write(data []byte) (pos *ChunkPosition, err error) {
 	}()
 
 	// write all data to the chunk buffer
+	// 将所有数据写入chunk buffer
 	pos, err = seg.writeToBuffer(data, chunkBuffer)
 	if err != nil {
 		return
 	}
 	// write the chunk buffer to the segment file
+	// 将chunk buffer写入段文件
 	if err = seg.writeChunkBuffer(chunkBuffer); err != nil {
 		return
 	}
@@ -427,43 +432,57 @@ func (seg *segment) Write(data []byte) (pos *ChunkPosition, err error) {
 	return
 }
 
+// appendChunkBuffer 增加ChunkBuffer
 func (seg *segment) appendChunkBuffer(buf *bytebufferpool.ByteBuffer, data []byte, chunkType ChunkType) {
+	//构建segment 首部信息
+
+	// chunk块长度
 	// Length	2 Bytes	index:4-5
 	binary.LittleEndian.PutUint16(seg.header[4:6], uint16(len(data)))
+	// chunk块类型
 	// Type	1 Byte	index:6
 	seg.header[6] = chunkType
+	// 校验和：包括chunk块长度、类型、载荷数据
 	// Checksum	4 Bytes index:0-3
 	sum := crc32.ChecksumIEEE(seg.header[4:])
 	sum = crc32.Update(sum, crc32.IEEETable, data)
 	binary.LittleEndian.PutUint32(seg.header[:4], sum)
 
 	// append the header and data to segment chunk buffer
+	// 将首部信息和载荷数据添加进chunk buffer
 	buf.B = append(buf.B, seg.header...)
 	buf.B = append(buf.B, data...)
 }
 
 // write the pending chunk buffer to the segment file
+// 将待写chunk buffer写入段文件
 func (seg *segment) writeChunkBuffer(buf *bytebufferpool.ByteBuffer) error {
+	//如果当前的block块大小大于设定的blockSize，返回block块大小超过最大值错误
 	if seg.currentBlockSize > blockSize {
 		return errors.New("the current block size exceeds the maximum block size")
 	}
 
 	// write the data into underlying file
+	// 将数据写入底层文件
 	if _, err := seg.fd.Write(buf.Bytes()); err != nil {
 		return err
 	}
 
 	// the cached block can not be reused again after writes.
+	// 用于缓存的block块不能在写入后再次使用
 	seg.startupBlock.blockNumber = -1
 	return nil
 }
 
 // Read reads the data from the segment file by the block number and chunk offset.
+// Read 使用block块号和chunk块写入偏移从段文件中读取数据
 func (seg *segment) Read(blockNumber uint32, chunkOffset int64) ([]byte, error) {
+	// 内部read函数
 	value, _, err := seg.readInternal(blockNumber, chunkOffset)
 	return value, err
 }
 
+// readInternal 使用block块号和chunk块写入偏移从段文件中读取数据
 func (seg *segment) readInternal(blockNumber uint32, chunkOffset int64) ([]byte, *ChunkPosition, error) {
 	if seg.closed {
 		return nil, nil, ErrClosed
@@ -476,6 +495,7 @@ func (seg *segment) readInternal(blockNumber uint32, chunkOffset int64) ([]byte,
 		nextChunk = &ChunkPosition{SegmentId: seg.id}
 	)
 
+	// 是否启动遍历
 	if seg.isStartupTraversal {
 		block = seg.startupBlock.block
 	} else {
@@ -489,48 +509,65 @@ func (seg *segment) readInternal(blockNumber uint32, chunkOffset int64) ([]byte,
 	for {
 		size := int64(blockSize)
 		offset := int64(blockNumber) * blockSize
+		// 如果offset+blockSize > segSize，说明最后一个block块的大小不足blockSize
+		// 因此size修改为段文件剩余大小：segSize - offset
 		if size+offset > segSize {
 			size = segSize - offset
 		}
 
+		// 如果chunkOffset>=size(实际block块大小)，说明chunk块写入偏移越界
 		if chunkOffset >= size {
 			return nil, nil, io.EOF
 		}
 
+		//如果启动遍历
 		if seg.isStartupTraversal {
 			// There are two cases that we should read block from file:
 			// 1. the acquired block is not the cached one
 			// 2. new writes appended to the block, and the block
 			// is still smaller than 32KB, we must read it again because of the new writes.
+
+			//在两种情况下，我们应该从文件中读取数据块：
+			//1. 获取的数据块不是缓存的数据块
+			//2. 有新的写入内容添加到该数据块，且该数据块仍然小于 32KB，由于有新的写入内容，我们必须再次读取该数据块。
 			if seg.startupBlock.blockNumber != int64(blockNumber) || size != blockSize {
 				// read block from segment file at the specified offset.
+				// 根据指定的写入偏移从段文件中读取block块
 				_, err := seg.fd.ReadAt(block[0:size], offset)
 				if err != nil {
 					return nil, nil, err
 				}
 				// remember the block
+				// 记录块号
 				seg.startupBlock.blockNumber = int64(blockNumber)
 			}
 		} else {
+			// 根据指定的写入偏移从段文件中读取block块
 			if _, err := seg.fd.ReadAt(block[0:size], offset); err != nil {
 				return nil, nil, err
 			}
 		}
 
 		// header
+		// 获取首部信息
 		header := block[chunkOffset : chunkOffset+chunkHeaderSize]
 
 		// length
+		// 获取载荷数据长度
 		length := binary.LittleEndian.Uint16(header[4:6])
 
 		// copy data
+		// 拷贝载荷数据
 		start := chunkOffset + chunkHeaderSize
 		result = append(result, block[start:start+int64(length)]...)
 
 		// check sum
+		// 检查校验和
 		checksumEnd := chunkOffset + chunkHeaderSize + int64(length)
+		// 计算校验和 chunkOffset+4：排除savedSum之外的chunk块长度、类型、载荷数据
 		checksum := crc32.ChecksumIEEE(block[chunkOffset+4 : checksumEnd])
 		savedSum := binary.LittleEndian.Uint32(header[:4])
+		// 如果校验和不相等则返回无效CRC的错误
 		if savedSum != checksum {
 			return nil, nil, ErrInvalidCRC
 		}
@@ -538,17 +575,27 @@ func (seg *segment) readInternal(blockNumber uint32, chunkOffset int64) ([]byte,
 		// type
 		chunkType := header[6]
 
+		// 为什么能通过ChunkTypeFull和ChunkTypeLast结束循环？
+		// 1、ChunkTypeFull标识代表chunk size < block size，已经将chunk块完整读出
+		// 2、ChunkTypeLast标识代表目前读取到的是chunk块最后一部分的数据，已经将chunk块完整读出
 		if chunkType == ChunkTypeFull || chunkType == ChunkTypeLast {
+			// 记录下一个chunk块的元数据
 			nextChunk.BlockNumber = blockNumber
 			nextChunk.ChunkOffset = checksumEnd
 			// If this is the last chunk in the block, and the left block
 			// space are paddings, the next chunk should be in the next block.
+			// 如果这是block块中最后一块chunk，并且左侧block块空间被填充了，那么下一个chunk块应该在下一个block块
+			// 如果新的写入偏移（ChunkOffset）+ chunk块首部大小（chunkHeaderSize）>= block块大小（blockSize）
+			// 那么BlockNumber+1，ChunkOffset重置为0
 			if checksumEnd+chunkHeaderSize >= blockSize {
 				nextChunk.BlockNumber += 1
 				nextChunk.ChunkOffset = 0
 			}
+			// 结束循环
 			break
 		}
+
+		// 因此，ChunkTypeFirst、ChunkTypeMiddle标识都代表在当前block块中为将chunk块读取完毕，需要继续前往下一个block块中读取
 		blockNumber += 1
 		chunkOffset = 0
 	}
@@ -557,6 +604,9 @@ func (seg *segment) readInternal(blockNumber uint32, chunkOffset int64) ([]byte,
 
 // Next returns the Next chunk data.
 // You can call it repeatedly until io.EOF is returned.
+//
+// Next 返回下一个chunk块数据
+// 你可以重复调用它，直到返回 io.EOF
 func (segReader *segmentReader) Next() ([]byte, *ChunkPosition, error) {
 	// The segment file is closed
 	if segReader.segment.closed {
@@ -564,12 +614,14 @@ func (segReader *segmentReader) Next() ([]byte, *ChunkPosition, error) {
 	}
 
 	// this position describes the current chunk info
+	// 这个position描述了当前chunk信息
 	chunkPosition := &ChunkPosition{
 		SegmentId:   segReader.segment.id,
 		BlockNumber: segReader.blockNumber,
 		ChunkOffset: segReader.chunkOffset,
 	}
 
+	// 读取载荷数据，并返回下一个chunk块元数据
 	value, nextChunk, err := segReader.segment.readInternal(
 		segReader.blockNumber,
 		segReader.chunkOffset,
@@ -581,6 +633,9 @@ func (segReader *segmentReader) Next() ([]byte, *ChunkPosition, error) {
 	// Calculate the chunk size.
 	// Remember that the chunk size is just an estimated value,
 	// not accurate, so don't use it for any important logic.
+	// 计算过chunk块大小
+	// 请记住，chunk块大小只是一个估计值，并不准确，所以不要在任何重要逻辑中使用它
+	// 这个chunk块大小包含padding的大小
 	chunkPosition.ChunkSize =
 		nextChunk.BlockNumber*blockSize + uint32(nextChunk.ChunkOffset) -
 			(segReader.blockNumber*blockSize + uint32(segReader.chunkOffset))
