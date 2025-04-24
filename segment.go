@@ -641,6 +641,7 @@ func (segReader *segmentReader) Next() ([]byte, *ChunkPosition, error) {
 			(segReader.blockNumber*blockSize + uint32(segReader.chunkOffset))
 
 	// update the position
+	// 更新position
 	segReader.blockNumber = nextChunk.BlockNumber
 	segReader.chunkOffset = nextChunk.ChunkOffset
 
@@ -650,6 +651,10 @@ func (segReader *segmentReader) Next() ([]byte, *ChunkPosition, error) {
 // Encode encodes the chunk position to a byte slice.
 // Return the slice with the actual occupied elements.
 // You can decode it by calling wal.DecodeChunkPosition().
+//
+// Encode 将chunk position编码为字节数组
+// 将返回携带真实存在元素的字节数组
+// 你可以通过调用 wal.DecodeChunkPosition() 解码
 func (cp *ChunkPosition) Encode() []byte {
 	return cp.encode(true)
 }
@@ -657,11 +662,16 @@ func (cp *ChunkPosition) Encode() []byte {
 // EncodeFixedSize encodes the chunk position to a byte slice.
 // Return a slice of size "maxLen".
 // You can decode it by calling wal.DecodeChunkPosition().
+//
+// EncodeFixedSize 将chunk position编码为字节数组
+// 返回一个最大长度的字节数组
+// 你可以通过调用 wal.DecodeChunkPosition() 解码
 func (cp *ChunkPosition) EncodeFixedSize() []byte {
 	return cp.encode(false)
 }
 
 // encode the chunk position to a byte slice.
+// encode 将chunk position编码为字节数组
 func (cp *ChunkPosition) encode(shrink bool) []byte {
 	buf := make([]byte, maxLen)
 
@@ -683,6 +693,9 @@ func (cp *ChunkPosition) encode(shrink bool) []byte {
 
 // DecodeChunkPosition decodes the chunk position from a byte slice.
 // You can encode it by calling wal.ChunkPosition.Encode().
+//
+// DecodeChunkPosition 从字节数组中解码出chunk position
+// 你可以通过调用 wal.ChunkPosition.Encode() 进行编码
 func DecodeChunkPosition(buf []byte) *ChunkPosition {
 	if len(buf) == 0 {
 		return nil
