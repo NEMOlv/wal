@@ -13,11 +13,14 @@ import (
 )
 
 const (
+	// 初始化段文件ID
 	initialSegmentFileID = 1
 )
 
 var (
-	ErrValueTooLarge       = errors.New("the data size can't larger than segment size")
+	// 载荷数据大小不能大于段文件大小
+	ErrValueTooLarge = errors.New("the data size can't larger than segment size")
+	// 待写数组大小不能大于段文件大小
 	ErrPendingSizeTooLarge = errors.New("the upper bound of pendingWrites can't larger than segment size")
 )
 
@@ -31,18 +34,36 @@ var (
 //
 // The mu sync.RWMutex is used for concurrent access to the WAL data structure,
 // ensuring safe access and modification.
+//
+// WAL是预写式日志结构，为将要写入的数据提供了持久性和容错性。
+// 它由 activeSegment 和 olderSegments 两部分组成，前者是当前用于新写入的段文件，后者是用于读取操作的段文件映射。
+// options字段存储了各种各样WAL的配置选项。
+// mu sync.RWMutex 用于并发访问 WAL 数据结构，确保访问和修改的安全。
 type WAL struct {
-	activeSegment     *segment               // active segment file, used for new incoming writes.
-	olderSegments     map[SegmentID]*segment // older segment files, only used for read.
-	options           Options
-	mu                sync.RWMutex
-	bytesWrite        uint32
-	renameIds         []SegmentID
-	pendingWrites     [][]byte
-	pendingSize       int64
+	// active segment file, used for new incoming writes.
+	// 活跃段文件，用于新写入
+	activeSegment *segment
+	// older segment files, only used for read.
+	// 历史段文件，只用于读操作
+	olderSegments map[SegmentID]*segment
+	// options字段存储了各种各样WAL的配置选项
+	options Options
+	// 读写锁，用于并发访问 WAL 数据结构，确保访问和修改的安全。
+	mu sync.RWMutex
+	// 字节写入 ？
+	bytesWrite uint32
+	// 重命名段ID
+	renameIds []SegmentID
+	// 待写数组
+	pendingWrites [][]byte
+	// 待写数组大小
+	pendingSize int64
+	// 写锁，用于待写数组的写入操作
 	pendingWritesLock sync.Mutex
-	closeC            chan struct{}
-	syncTicker        *time.Ticker
+	// 关闭channel
+	closeC chan struct{}
+	// 同步计时器
+	syncTicker *time.Ticker
 }
 
 // Reader represents a reader for the WAL.
@@ -51,6 +72,10 @@ type WAL struct {
 // and currentReader, which is the index of the current segmentReader in the slice.
 //
 // The currentReader field is used to iterate over the segmentReaders slice.
+//
+// Reader 是 WAL 的读取器
+// 它由segmentReaders和currentReader两部分组成，前者是由段ID排序的segmentReaders数组，后者是当前segmentReader在segmentReaders数组中的下标
+// currentReader 字段用于遍历 segmentReaders数组
 type Reader struct {
 	segmentReaders []*segmentReader
 	currentReader  int
@@ -59,10 +84,17 @@ type Reader struct {
 // Open opens a WAL with the given options.
 // It will create the directory if not exists, and open all segment files in the directory.
 // If there is no segment file in the directory, it will create a new one.
+//
+// Open 用给予的配置选项打开WAL实例
+// 如果目录不存在，它将会创建一个，然后它会打开目录中的所有段文件
+// 如果目录中没有段文件，它将会创建一个新的段文件
 func Open(options Options) (*WAL, error) {
+	// 检查段文件扩展名是否有'.'
 	if !strings.HasPrefix(options.SegmentFileExt, ".") {
 		return nil, fmt.Errorf("segment file extension must start with '.'")
 	}
+
+	// 初始化WAL实例
 	wal := &WAL{
 		options:       options,
 		olderSegments: make(map[SegmentID]*segment),
@@ -71,23 +103,27 @@ func Open(options Options) (*WAL, error) {
 	}
 
 	// create the directory if not exists.
+	// 如果目录不存在，则新建一个
 	if err := os.MkdirAll(options.DirPath, os.ModePerm); err != nil {
 		return nil, err
 	}
 
 	// iterate the dir and open all segment files.
+	// 遍历目录并打开所有段文件
 	entries, err := os.ReadDir(options.DirPath)
 	if err != nil {
 		return nil, err
 	}
 
 	// get all segment file ids.
+	// 获取所有段文件ID
 	var segmentIDs []int
 	for _, entry := range entries {
 		if entry.IsDir() {
 			continue
 		}
 		var id int
+		//格式化匹配：从段文件名中取出ID值赋予id变量
 		_, err := fmt.Sscanf(entry.Name(), "%d"+options.SegmentFileExt, &id)
 		if err != nil {
 			continue
@@ -96,20 +132,21 @@ func Open(options Options) (*WAL, error) {
 	}
 
 	// empty directory, just initialize a new segment file.
+	// 如果是空目录，则初始化一个新的段文件
 	if len(segmentIDs) == 0 {
-		segment, err := openSegmentFile(options.DirPath, options.SegmentFileExt,
-			initialSegmentFileID)
+		// 打开一个新的段文件
+		segment, err := openSegmentFile(options.DirPath, options.SegmentFileExt, initialSegmentFileID)
 		if err != nil {
 			return nil, err
 		}
 		wal.activeSegment = segment
 	} else {
 		// open the segment files in order, get the max one as the active segment file.
+		// 按序打开段文件，将段文件ID最大的段文件作为活跃段文件
 		sort.Ints(segmentIDs)
 
 		for i, segId := range segmentIDs {
-			segment, err := openSegmentFile(options.DirPath, options.SegmentFileExt,
-				uint32(segId))
+			segment, err := openSegmentFile(options.DirPath, options.SegmentFileExt, uint32(segId))
 			if err != nil {
 				return nil, err
 			}

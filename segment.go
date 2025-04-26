@@ -135,6 +135,7 @@ func putBuffer(buf []byte) {
 	blockPool.Put(buf)
 }
 
+// todo：实际上这里不应该被称作打开一个新的段文件，它仅仅是打开段文件的作用
 // openSegmentFile a new segment file.
 // openSegmentFile: 打开一个的段文件
 func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
@@ -150,7 +151,13 @@ func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
 
 	// set the current block number and block size.
 	// 设置当前block块的块号和块大小
-	// 如果打开的是空文件, 则offset=0，否则offset=文件的末尾位置
+	// fd.Seek:
+	//		offset：设置下一次读取或写入文件的偏移量
+	//		whence：设置偏移原点
+	//			io.SeekStart(0) 表示相对于文件的原点进行偏移
+	//			io.SeekCurrent(1) 表示相对于当前偏移量进行偏移
+	//			io.SeekEnd(2) 表示相对于文件的终点进行偏移
+	// 因此，如果打开的是空文件, 则offset=0，否则offset=文件的末尾位置
 	offset, err := fd.Seek(0, io.SeekEnd)
 	if err != nil {
 		return nil, fmt.Errorf("seek to the end of segment file %d%s failed: %v", id, extName, err)
