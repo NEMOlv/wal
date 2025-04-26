@@ -100,7 +100,7 @@ func putBuffer(buf []byte) {
 	blockPool.Put(buf)
 }
 
-// openSegmentFile a segment file.
+// openSegmentFile open a segment file.
 func openSegmentFile(dirPath, extName string, id uint32) (*segment, error) {
 	fd, err := os.OpenFile(
 		SegmentFileName(dirPath, extName, id),
