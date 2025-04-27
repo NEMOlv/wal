@@ -92,6 +92,7 @@ type segmentReader struct {
 // to avoid memory allocation.
 //
 // 启动遍历只有一个读取器（单个 goroutine），因此我们可以使用一个 block 来完成整个遍历，以避免内存分配
+// 如果要顺序迭代整个数据库时，startupBlock可以避免分配内存带来的额外消耗
 type startupBlock struct {
 	// block块
 	block []byte
@@ -289,6 +290,7 @@ func (seg *segment) writeToBuffer(data []byte, chunkBuffer *bytebufferpool.ByteB
 	dataSize := uint32(len(data))
 	// The entire chunk can fit into the block.
 	// 整个chunk块都可以放入block块中
+
 	if seg.currentBlockSize+dataSize+chunkHeaderSize <= blockSize {
 		seg.appendChunkBuffer(chunkBuffer, data, ChunkTypeFull)
 		position.ChunkSize = dataSize + chunkHeaderSize
